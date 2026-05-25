@@ -9,6 +9,7 @@ import torch.nn.functional as _F
 from PIL import Image, ImageOps, ImageFile
 from torch.utils.data import Dataset
 from utils import normalize_rgb
+from datasets.rarp_pose_canonicalization import canonicalize_pose_symmetry as _canonicalize_pose_symmetry
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -30,9 +31,17 @@ if _main_mod is not None and not hasattr(_main_mod, 'Pose'):
 # are forked *after* this module is imported, each worker gets an independent
 # copy of this variable (initially None) and initialises it lazily.
 _gms_instrument = None
+_gms_instrument_device = None
 _GMS_ROOT = os.path.normpath(os.path.join(os.path.dirname(__file__), '..', 'submodules', 'gaussian-mesh-splatting'))
 _GMS_PRETRAIN_PATH = '/mnt/iMVR/daiyun/shuojue-temp/code/Instrument-Splatting/pretrained_models'
 _RARP_FC = 587.54401824   # focal length shared by all RARP sequences
+
+
+def _get_render_cuda_device():
+    if not torch.cuda.is_available():
+        return None, 0
+    idx = torch.cuda.current_device()
+    return torch.device(f'cuda:{idx}'), idx
 
 
 def _build_rot_matrix(quat: torch.Tensor) -> torch.Tensor:
@@ -114,6 +123,8 @@ class RARPInstanceDataset(Dataset):
         v2_force=False,
         cse_coord_root=None,
         render_on_the_fly=False,
+        canonicalize_pose_symmetry=False,
+        canonical_eps=0.08,
     ):
         super().__init__()
         if min_dice is None:
@@ -130,6 +141,14 @@ class RARPInstanceDataset(Dataset):
         self.v2_force = v2_force
         self.cse_coord_root = cse_coord_root
         self.render_on_the_fly = render_on_the_fly
+        self.canonicalize_pose_symmetry = bool(canonicalize_pose_symmetry)
+        self.canonical_eps = float(canonical_eps)
+        if self.canonicalize_pose_symmetry and self.cse_coord_root is not None and not self.render_on_the_fly:
+            raise ValueError(
+                "canonicalize_pose_symmetry requires render_on_the_fly=1 when "
+                "cse_coord_root is set, because cached CSE labels were generated "
+                "with the original pose convention."
+            )
         # (video_name, frame_id, instance_id) → extracted pose tensors (CPU)
         # Populated only when render_on_the_fly=True; stays empty otherwise.
         self.pose_data: dict = {}
@@ -238,13 +257,20 @@ class RARPInstanceDataset(Dataset):
                     pose_info = val.get('pose_info')
                     if pose_info is not None:
                         try:
-                            self.pose_data[(video_name, frame_id, instance_id)] = {
+                            pose_dict = {
                                 'rot':     pose_info.rot.detach().float().flatten(),
                                 'trans':   pose_info.trans.detach().float().flatten(),
                                 'alpha':   pose_info.alpha.detach().float().flatten(),
                                 'theta_l': pose_info.theta_l.detach().float().flatten(),
                                 'theta_r': pose_info.theta_r.detach().float().flatten(),
                             }
+                            self.pose_data[(video_name, frame_id, instance_id)] = (
+                                _canonicalize_pose_symmetry(
+                                    pose_dict,
+                                    eps=self.canonical_eps,
+                                    enabled=self.canonicalize_pose_symmetry,
+                                )
+                            )
                         except AttributeError:
                             pass
 
@@ -409,6 +435,11 @@ class RARPInstanceDataset(Dataset):
                 'part_mask': part_mask,        # [H, W] int64
                 'wrist_center': wrist_center,  # [2] (x, y)
                 'coord_img': coord_img,        # [H, W, 4] float32 or None
+                'pose_sym_flipped': bool(
+                    self.pose_data.get(
+                        (video_name, frame_id, instance_id), {}
+                    ).get('pose_sym_flipped', torch.tensor(False)).item()
+                ),
             })
 
         # ------------------------------------------------------------------ #
@@ -472,9 +503,10 @@ class RARPInstanceDataset(Dataset):
         """
         Render a canonical-coordinate image on-the-fly using the GMS instrument.
 
-        Initialises a per-worker singleton (module-level _gms_instrument) on
-        first call.  Uses device='cpu' for FK so CUDA is never touched inside
-        DataLoader workers (avoiding fork-safety issues).
+        Initialises a per-rank singleton (module-level _gms_instrument) on
+        first call.  In DDP, the GMS code uses plain .cuda() in several places,
+        so we explicitly set/use this rank's current CUDA device before GMS init
+        and FK to avoid mixing logical cuda:0 and cuda:1 tensors.
 
         The GMS submodule has its own 'utils' package that conflicts with
         multiipr's 'utils'.  We swap sys.modules temporarily during GMS
@@ -482,8 +514,12 @@ class RARPInstanceDataset(Dataset):
 
         Returns (img_h, img_w, 4) float32 or None on failure.
         """
-        global _gms_instrument
-        if _gms_instrument is None:
+        global _gms_instrument, _gms_instrument_device
+        cuda_device, egl_device_idx = _get_render_cuda_device()
+        if cuda_device is not None:
+            torch.cuda.set_device(cuda_device)
+
+        if _gms_instrument is None or _gms_instrument_device != cuda_device:
             if _GMS_ROOT not in sys.path:
                 sys.path.insert(0, _GMS_ROOT)
             # Save and evict multiipr's 'utils' so GMS can import its own.
@@ -492,10 +528,18 @@ class RARPInstanceDataset(Dataset):
             for k in _saved:
                 del sys.modules[k]
             try:
-                from instrument_gaussian_wrapper import instrument_gaussian_wrapper
-                _gms_instrument = instrument_gaussian_wrapper(
-                    pretrain_path=_GMS_PRETRAIN_PATH
-                ).get_instrument()
+                if cuda_device is None:
+                    from instrument_gaussian_wrapper import instrument_gaussian_wrapper
+                    _gms_instrument = instrument_gaussian_wrapper(
+                        pretrain_path=_GMS_PRETRAIN_PATH
+                    ).get_instrument()
+                else:
+                    with torch.cuda.device(cuda_device):
+                        from instrument_gaussian_wrapper import instrument_gaussian_wrapper
+                        _gms_instrument = instrument_gaussian_wrapper(
+                            pretrain_path=_GMS_PRETRAIN_PATH
+                        ).get_instrument()
+                _gms_instrument_device = cuda_device
             except Exception as e:
                 warnings.warn(f"GMS instrument init failed: {e}")
                 return None
@@ -506,22 +550,33 @@ class RARPInstanceDataset(Dataset):
                 sys.modules.update(_saved)
 
         try:
-            rot_mat = _build_rot_matrix(pose_params['rot'])
-            trans   = pose_params['trans'].flatten()
+            device = cuda_device if cuda_device is not None else torch.device('cpu')
+            rot_mat = _build_rot_matrix(pose_params['rot']).to(device)
+            trans   = pose_params['trans'].flatten().to(device)
             # Keep shape [1] — _rodrigues_rotation_matrix needs a 1-d tensor
             # so that torch.stack produces [3,1] rows, giving a [3,3] output.
-            alpha   = pose_params['alpha'].flatten()
-            theta_l = pose_params['theta_l'].flatten()
-            theta_r = pose_params['theta_r'].flatten()
+            alpha   = pose_params['alpha'].flatten().to(device)
+            theta_l = pose_params['theta_l'].flatten().to(device)
+            theta_r = pose_params['theta_r'].flatten().to(device)
 
-            _gms_instrument.forward_kinematics(
-                rot_mat, trans, alpha, theta_l, theta_r,
-                device='cpu', with_mesh=True,
-            )
+            with torch.no_grad():
+                if cuda_device is not None:
+                    with torch.cuda.device(cuda_device):
+                        _gms_instrument.forward_kinematics(
+                            rot_mat, trans, alpha, theta_l, theta_r,
+                            device=device, pose_grad=False, with_mesh=True,
+                        )
+                else:
+                    _gms_instrument.forward_kinematics(
+                        rot_mat, trans, alpha, theta_l, theta_r,
+                        device=device, pose_grad=False, with_mesh=True,
+                    )
             K = np.array([[_RARP_FC, 0.0, img_w / 2.0],
                           [0.0, _RARP_FC, img_h / 2.0],
                           [0.0, 0.0, 1.0]], dtype=np.float32)
-            return _gms_instrument.render_canonical_coords(K, img_h, img_w).astype(np.float32)
+            return _gms_instrument.render_canonical_coords(
+                K, img_h, img_w, device_idx=egl_device_idx
+            ).astype(np.float32)
         except Exception as e:
             warnings.warn(f"CSE on-the-fly render failed: {e}")
             return None

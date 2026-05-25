@@ -899,7 +899,7 @@ def _paint_projected_triangles(cad, posed_vertices, K, args, shade_mesh=False):
     return canvas
 
 
-def _render_trimesh_panel(cad, posed_vertices, K, h, w, args):
+def _render_trimesh_panel(cad, posed_vertices, K, h, w, args, return_support=False):
     try:
         import pyrender
     except ImportError as exc:
@@ -907,25 +907,25 @@ def _render_trimesh_panel(cad, posed_vertices, K, h, w, args):
 
     mesh_list = []
     for part_name in ("shaft", "wrist", "l_gripper", "r_gripper"):
-        mesh = trimesh.Trimesh(
-            vertices=posed_vertices[part_name],
-            faces=cad.faces[part_name],
-            process=False,
-        )
+        mesh = cad.meshes[part_name].copy()
+        mesh.vertices = np.asarray(posed_vertices[part_name], dtype=np.float64)
         mesh_list.append(mesh)
     combined_mesh = trimesh.util.concatenate(mesh_list)
 
     extrinsic = np.eye(4, dtype=np.float64)
     extrinsic[:, 1:3] *= -1
 
-    scene = pyrender.Scene(bg_color=[0, 0, 0, 0], ambient_light=[0.08, 0.08, 0.08])
-    material = pyrender.MetallicRoughnessMaterial(
-        metallicFactor=0.0,
-        roughnessFactor=0.75,
-        baseColorFactor=[0.78, 0.78, 0.72, 1.0],
-        alphaMode="OPAQUE",
+    ambient = float(getattr(args, "pyrender_ambient_light", 0.3))
+    scene = pyrender.Scene(
+        bg_color=[0, 0, 0, 0],
+        ambient_light=[ambient, ambient, ambient],
     )
-    scene.add(pyrender.Mesh.from_trimesh(combined_mesh, material=material, smooth=False))
+    scene.add(
+        pyrender.Mesh.from_trimesh(
+            combined_mesh,
+            smooth=bool(getattr(args, "mesh_render_smooth", 1)),
+        )
+    )
 
     camera = pyrender.IntrinsicsCamera(
         fx=float(K[0, 0]),
@@ -946,10 +946,13 @@ def _render_trimesh_panel(cad, posed_vertices, K, h, w, args):
 
     renderer = pyrender.OffscreenRenderer(viewport_width=w, viewport_height=h)
     try:
-        color, _ = renderer.render(scene)
+        color, depth = renderer.render(scene, flags=pyrender.RenderFlags.RGBA)
     finally:
         renderer.delete()
-    return color[:, :, :3].astype(np.uint8)
+    color = color[:, :, :3].astype(np.uint8)
+    if return_support:
+        return color, depth > 0
+    return color
 
 
 def draw_projected_mesh(rgb, cad: InstrumentCAD, pose_params, K, args):
@@ -1184,6 +1187,8 @@ def parse_args():
     parser.add_argument("--pyrender_znear", type=float, default=0.001)
     parser.add_argument("--pyrender_zfar", type=float, default=0.6)
     parser.add_argument("--pyrender_light_intensity", type=float, default=1.0)
+    parser.add_argument("--pyrender_ambient_light", type=float, default=0.3)
+    parser.add_argument("--mesh_render_smooth", type=int, default=1)
     return parser.parse_args()
 
 
