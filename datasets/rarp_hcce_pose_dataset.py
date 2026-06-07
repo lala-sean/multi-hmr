@@ -40,9 +40,10 @@ class RARPHCCEPoseDataset(torch.utils.data.Dataset):
         self.canonical_eps = float(canonical_eps)
         self.base = RARPInstanceDataset(
             *args,
-            training=False,
+            training=training,
             canonicalize_pose_symmetry=self.canonicalize_pose_symmetry,
             canonical_eps=self.canonical_eps,
+            random_resample=False,
             **kwargs,
         )
         self.pose_cache = {}
@@ -70,8 +71,10 @@ class RARPHCCEPoseDataset(torch.utils.data.Dataset):
             idx = random.randrange(len(self.base))
         img, annot = self.base[idx]
         video_name, frame_id, instances_list = self.base.samples[idx]
+        instance_ids = [instance_id for instance_id, _ in instances_list]
         instruments = annot["instruments"]
-        for inst, (instance_id, _) in zip(instruments, instances_list):
+        for inst, fallback_instance_id in zip(instruments, instance_ids):
+            instance_id = inst.get("instance_id", fallback_instance_id)
             pose = self._load_pose(video_name, frame_id, instance_id)
             inst["action_gt"] = np.array(
                 [pose["alpha"], pose["theta_l"], pose["theta_r"]],

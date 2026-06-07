@@ -2,11 +2,11 @@ import os
 import json
 import torch
 import numpy as np
-from PIL import Image, ImageOps, ImageFile
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 from utils import normalize_rgb
 import random
-import torch.nn.functional as F
+from datasets.rarp_augmentation import transform_rarp_sample
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 
@@ -32,7 +32,14 @@ class SurgicalInstruments(Dataset):
                  img_size=896,
                  root_dir=RARP50_DIR,
                  subsample=1,
-                 n=-1):
+                 n=-1,
+                 aug_random_crop_rotate=False,
+                 aug_geom_prob=1.0,
+                 aug_crop_scale=1.2,
+                 aug_max_angle=np.pi,
+                 aug_offset_scale=1.0,
+                 aug_color_jitter=False,
+                 dense_output_stride=4):
         super().__init__()
 
         self.name = 'rarp50'
@@ -41,6 +48,13 @@ class SurgicalInstruments(Dataset):
         self.img_size = img_size
         self.root_dir = root_dir
         self.subsample = subsample
+        self.aug_random_crop_rotate = bool(aug_random_crop_rotate)
+        self.aug_geom_prob = float(aug_geom_prob)
+        self.aug_crop_scale = float(aug_crop_scale)
+        self.aug_max_angle = float(aug_max_angle)
+        self.aug_offset_scale = float(aug_offset_scale)
+        self.aug_color_jitter = bool(aug_color_jitter)
+        self.dense_output_stride = int(dense_output_stride)
 
         self.image_dir = os.path.join(root_dir, split, 'images')
         self.mask_dir = os.path.join(root_dir, split, 'masks')
@@ -90,7 +104,7 @@ class SurgicalInstruments(Dataset):
         img_pil = Image.open(img_path)
         if img_pil.mode != 'RGB':
             img_pil = img_pil.convert('RGB')
-        real_width, real_height = img_pil.size  # (1920, 1080)
+        rgb_np = np.asarray(img_pil)
 
         # Load mask and parts
         mask_path = os.path.join(self.mask_dir, video_id, f"{frame_id}.png")
@@ -128,46 +142,25 @@ class SurgicalInstruments(Dataset):
                 'wrist_center': wrist_center,                   # [2] (x, y) in original pixel coords
             })
 
-        # Resize image (aspect-ratio-preserving + pad to square)
-        scale = self.img_size / max(real_width, real_height)
-        new_w, new_h = int(real_width * scale), int(real_height * scale)
-
-        img_pil = ImageOps.contain(img_pil, (self.img_size, self.img_size))
-        img_pil = ImageOps.pad(img_pil, size=(self.img_size, self.img_size))
-
-        # Compute padding offset (ImageOps.pad centers the image)
-        pad_x = (self.img_size - new_w) // 2
-        pad_y = (self.img_size - new_h) // 2
-
-        # Apply same transform to masks and wrist centers
-        quarter_size = self.img_size // 4
-        for inst in instruments:
-            # Resize mask to new_w x new_h, then pad to img_size x img_size
-            m = Image.fromarray(inst['inst_mask']).resize((new_w, new_h), Image.NEAREST)
-            m_padded = np.zeros((self.img_size, self.img_size), dtype=np.float32)
-            m_padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = np.array(m)
-            # Downsample to 1/4 resolution
-            m_quarter = np.array(Image.fromarray(m_padded).resize(
-                (quarter_size, quarter_size), Image.NEAREST))
-            inst['inst_mask'] = m_quarter  # [H/4, W/4]
-
-            # Part mask: same transform
-            p = Image.fromarray(inst['part_mask'].astype(np.uint8)).resize((new_w, new_h), Image.NEAREST)
-            p_padded = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
-            p_padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = np.array(p)
-            p_quarter = np.array(Image.fromarray(p_padded).resize(
-                (quarter_size, quarter_size), Image.NEAREST))
-            inst['part_mask'] = p_quarter.astype(np.int64)  # [H/4, W/4]
-
-            # Transform wrist center
-            wc = inst['wrist_center']
-            wc[0] = wc[0] * scale + pad_x
-            wc[1] = wc[1] * scale + pad_y
-            inst['wrist_center'] = wc
-
-        # Image to array
-        img_array = np.asarray(img_pil)
-        img_array = normalize_rgb(img_array, imagenet_normalization=1)
+        rgb_sq, instruments, _ = transform_rarp_sample(
+            rgb_np,
+            instruments,
+            img_size=self.img_size,
+            output_size=self.img_size // 4,
+            dense_output_size=(
+                self.img_size // self.dense_output_stride
+                if self.dense_output_stride != 4
+                else None
+            ),
+            training=self.training,
+            aug_random_crop_rotate=self.aug_random_crop_rotate,
+            aug_geom_prob=self.aug_geom_prob,
+            aug_crop_scale=self.aug_crop_scale,
+            aug_max_angle=self.aug_max_angle,
+            aug_offset_scale=self.aug_offset_scale,
+            aug_color_jitter=self.aug_color_jitter,
+        )
+        img_array = normalize_rgb(rgb_sq, imagenet_normalization=1)
 
         annot = {
             'imagename': f"{video_id}/{frame_id}",
@@ -227,6 +220,28 @@ def collate_fn_instrument(x, *args, **kwargs):
             part_masks[i, j] = inst['part_mask']
     y['inst_masks'] = torch.from_numpy(inst_masks)
     y['part_masks'] = torch.from_numpy(part_masks)
+
+    dense_shape = None
+    for i in range(bs):
+        for inst in x[i][1]['instruments']:
+            pm = inst.get('part_mask_dense')
+            if pm is not None:
+                dense_shape = pm.shape
+                break
+        if dense_shape is not None:
+            break
+    if dense_shape is not None:
+        dh, dw = dense_shape
+        inst_masks_dense = np.zeros((bs, max_insts, dh, dw), dtype=np.float32)
+        part_masks_dense = np.zeros((bs, max_insts, dh, dw), dtype=np.int64)
+        for i in range(bs):
+            for j, inst in enumerate(x[i][1]['instruments']):
+                if inst.get('inst_mask_dense') is not None:
+                    inst_masks_dense[i, j] = inst['inst_mask_dense']
+                if inst.get('part_mask_dense') is not None:
+                    part_masks_dense[i, j] = inst['part_mask_dense']
+        y['inst_masks_dense'] = torch.from_numpy(inst_masks_dense)
+        y['part_masks_dense'] = torch.from_numpy(part_masks_dense)
 
     y['n_instruments'] = torch.tensor(n_insts, dtype=torch.float32)
 

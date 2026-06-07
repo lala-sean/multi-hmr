@@ -638,13 +638,15 @@ def optimize_pose(cad: InstrumentCAD, corr: Correspondences, rvec0, trans0, K, a
                 part_name, active_corr.points_part[idx], transforms
             )
             z_ok = points_cam[:, 2] > args.min_depth
-            if not np.all(z_ok):
-                bad = np.where(~z_ok)[0][:5].tolist()
-                raise FloatingPointError(
-                    f"Projected points behind camera for {part_name}; bad indices {bad}"
-                )
-            proj = _project(points_cam, K)
-            residuals.append((proj - active_corr.uv[idx]).reshape(-1))
+            part_res = np.full(
+                (len(idx), 2),
+                float(getattr(args, "behind_camera_penalty", 1e4)),
+                dtype=np.float64,
+            )
+            if np.any(z_ok):
+                proj = _project(points_cam[z_ok], K)
+                part_res[z_ok] = proj - active_corr.uv[idx][z_ok]
+            residuals.append(part_res.reshape(-1))
         return np.concatenate(residuals, axis=0)
 
     def rmse_for(mask, params):
@@ -1166,6 +1168,7 @@ def parse_args():
     parser.add_argument("--optim_f_scale", type=float, default=8.0)
     parser.add_argument("--optim_max_nfev", type=int, default=200)
     parser.add_argument("--min_depth", type=float, default=1e-4)
+    parser.add_argument("--behind_camera_penalty", type=float, default=1e4)
 
     parser.add_argument("--vis_every", type=int, default=1)
     parser.add_argument(

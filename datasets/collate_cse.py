@@ -46,4 +46,26 @@ def collate_fn_instrument_cse(batch):
 
     y['coord_imgs'] = torch.from_numpy(coord_imgs)   # [bs, max_inst, H/4, W/4, 4]
     y['has_cse']    = torch.from_numpy(has_cse)      # [bs, max_inst] bool
+
+    dense_shape = None
+    for i in range(bs):
+        for inst in batch[i][1]['instruments']:
+            ci = inst.get('coord_img_dense')
+            if ci is not None:
+                dense_shape = ci.shape[:2]
+                break
+        if dense_shape is not None:
+            break
+    if dense_shape is not None:
+        dh, dw = dense_shape
+        coord_imgs_dense = np.zeros((bs, max_inst, dh, dw, 4), dtype=np.float32)
+        has_cse_dense = np.zeros((bs, max_inst), dtype=bool)
+        for i in range(bs):
+            for j, inst in enumerate(batch[i][1]['instruments']):
+                ci = inst.get('coord_img_dense')
+                if ci is not None:
+                    coord_imgs_dense[i, j] = ci
+                    has_cse_dense[i, j] = True
+        y['coord_imgs_dense'] = torch.from_numpy(coord_imgs_dense)
+        y['has_cse_dense'] = torch.from_numpy(has_cse_dense)
     return img_array, y

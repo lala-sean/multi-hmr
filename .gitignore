@@ -15,6 +15,7 @@ log/
 runs/
 wandb/
 outputs/
+eval_outputs/
 debug_vis/
 demo_outputs/
 demo_out
@@ -22,6 +23,7 @@ models
 .multihmr
 tmp_data
 
+sam3/
 submodules/
 
 *.log

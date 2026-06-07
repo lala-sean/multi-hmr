@@ -6,9 +6,10 @@ import random
 import numpy as np
 import torch
 import torch.nn.functional as _F
-from PIL import Image, ImageOps, ImageFile
+from PIL import Image, ImageFile
 from torch.utils.data import Dataset
 from utils import normalize_rgb
+from datasets.rarp_augmentation import transform_rarp_sample
 from datasets.rarp_pose_canonicalization import canonicalize_pose_symmetry as _canonicalize_pose_symmetry
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -125,6 +126,14 @@ class RARPInstanceDataset(Dataset):
         render_on_the_fly=False,
         canonicalize_pose_symmetry=False,
         canonical_eps=0.08,
+        aug_random_crop_rotate=False,
+        aug_geom_prob=1.0,
+        aug_crop_scale=1.2,
+        aug_max_angle=np.pi,
+        aug_offset_scale=1.0,
+        aug_color_jitter=False,
+        random_resample=True,
+        dense_output_stride=4,
     ):
         super().__init__()
         if min_dice is None:
@@ -143,6 +152,14 @@ class RARPInstanceDataset(Dataset):
         self.render_on_the_fly = render_on_the_fly
         self.canonicalize_pose_symmetry = bool(canonicalize_pose_symmetry)
         self.canonical_eps = float(canonical_eps)
+        self.aug_random_crop_rotate = bool(aug_random_crop_rotate)
+        self.aug_geom_prob = float(aug_geom_prob)
+        self.aug_crop_scale = float(aug_crop_scale)
+        self.aug_max_angle = float(aug_max_angle)
+        self.aug_offset_scale = float(aug_offset_scale)
+        self.aug_color_jitter = bool(aug_color_jitter)
+        self.random_resample = bool(random_resample)
+        self.dense_output_stride = int(dense_output_stride)
         if self.canonicalize_pose_symmetry and self.cse_coord_root is not None and not self.render_on_the_fly:
             raise ValueError(
                 "canonicalize_pose_symmetry requires render_on_the_fly=1 when "
@@ -338,7 +355,7 @@ class RARPInstanceDataset(Dataset):
         return f"{self.name}: split={self.split} - N={len(self.samples)}"
 
     def __getitem__(self, idx):
-        if self.training:
+        if self.training and self.random_resample:
             idx = random.choices(range(len(self.samples)))[0]
 
         video_name, frame_id, instances_list = self.samples[idx]
@@ -360,6 +377,7 @@ class RARPInstanceDataset(Dataset):
         if img_pil.mode != 'RGB':
             img_pil = img_pil.convert('RGB')
         real_width, real_height = img_pil.size
+        rgb_np = np.asarray(img_pil)
 
         # mask files are 0-indexed
         mask_frame_id = f'{int(frame_id) - 1:05d}'
@@ -431,6 +449,7 @@ class RARPInstanceDataset(Dataset):
                     )
 
             instruments_raw.append({
+                'instance_id': instance_id,
                 'inst_mask': inst_mask,       # [H, W] float32
                 'part_mask': part_mask,        # [H, W] int64
                 'wrist_center': wrist_center,  # [2] (x, y)
@@ -442,54 +461,25 @@ class RARPInstanceDataset(Dataset):
                 ),
             })
 
-        # ------------------------------------------------------------------ #
-        # Resize + pad (identical to SurgicalInstruments)
-        # ------------------------------------------------------------------ #
-        scale = self.img_size / max(real_width, real_height)
-        new_w = int(real_width * scale)
-        new_h = int(real_height * scale)
-
-        img_pil = ImageOps.contain(img_pil, (self.img_size, self.img_size))
-        img_pil = ImageOps.pad(img_pil, size=(self.img_size, self.img_size))
-
-        pad_x = (self.img_size - new_w) // 2
-        pad_y = (self.img_size - new_h) // 2
-        quarter_size = self.img_size // 4
-
-        for inst in instruments_raw:
-            # Instance mask
-            m = Image.fromarray(inst['inst_mask']).resize((new_w, new_h), Image.NEAREST)
-            m_padded = np.zeros((self.img_size, self.img_size), dtype=np.float32)
-            m_padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = np.array(m)
-            inst['inst_mask'] = np.array(
-                Image.fromarray(m_padded).resize((quarter_size, quarter_size), Image.NEAREST)
-            )
-
-            # Part mask
-            p = Image.fromarray(inst['part_mask'].astype(np.uint8)).resize(
-                (new_w, new_h), Image.NEAREST)
-            p_padded = np.zeros((self.img_size, self.img_size), dtype=np.uint8)
-            p_padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = np.array(p)
-            inst['part_mask'] = np.array(
-                Image.fromarray(p_padded).resize((quarter_size, quarter_size), Image.NEAREST)
-            ).astype(np.int64)
-
-            # Wrist center
-            wc = inst['wrist_center']
-            wc[0] = wc[0] * scale + pad_x
-            wc[1] = wc[1] * scale + pad_y
-            inst['wrist_center'] = wc
-
-            # Coord image — resize to quarter_size using nearest-neighbour
-            coord_raw = inst['coord_img']
-            if coord_raw is not None:
-                coord_small = _resize_coord_img(coord_raw, new_h, new_w)
-                coord_padded = np.zeros((self.img_size, self.img_size, 4), dtype=np.float32)
-                coord_padded[pad_y:pad_y + new_h, pad_x:pad_x + new_w] = coord_small
-                inst['coord_img'] = _resize_coord_img(coord_padded, quarter_size, quarter_size)
-            # else: inst['coord_img'] stays None
-
-        img_array = normalize_rgb(np.asarray(img_pil), imagenet_normalization=1)
+        rgb_sq, instruments_raw, _ = transform_rarp_sample(
+            rgb_np,
+            instruments_raw,
+            img_size=self.img_size,
+            output_size=self.img_size // 4,
+            dense_output_size=(
+                self.img_size // self.dense_output_stride
+                if self.dense_output_stride != 4
+                else None
+            ),
+            training=self.training,
+            aug_random_crop_rotate=self.aug_random_crop_rotate,
+            aug_geom_prob=self.aug_geom_prob,
+            aug_crop_scale=self.aug_crop_scale,
+            aug_max_angle=self.aug_max_angle,
+            aug_offset_scale=self.aug_offset_scale,
+            aug_color_jitter=self.aug_color_jitter,
+        )
+        img_array = normalize_rgb(rgb_sq, imagenet_normalization=1)
 
         annot = {
             'imagename': f'{video_name}/{frame_id}',
