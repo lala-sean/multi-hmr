@@ -304,6 +304,47 @@ def draw_wrist_centers(panel, preds):
     return out
 
 
+KEYPOINT_COLORS = (
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 128, 0),
+    (0, 255, 0),
+    (255, 0, 0),
+    (0, 128, 255),
+    (180, 80, 255),
+)
+
+
+def draw_keypoints(panel, preds, color=None):
+    out = panel.copy()
+    h, w = out.shape[:2]
+    for pred in preds:
+        keypoint = pred.get("keypoint_xy")
+        if keypoint is None:
+            continue
+        if torch.is_tensor(keypoint):
+            keypoint = keypoint.detach().cpu().numpy()
+        keypoint = np.asarray(keypoint, dtype=np.float64).reshape(-1, 2)
+        for j, xy in enumerate(keypoint):
+            if not np.isfinite(xy).all():
+                continue
+            x, y = int(round(float(xy[0]))), int(round(float(xy[1])))
+            if not (0 <= x < w and 0 <= y < h):
+                continue
+            c = KEYPOINT_COLORS[j % len(KEYPOINT_COLORS)] if color is None else color
+            cv2.circle(out, (x, y), 5, c, 2, cv2.LINE_AA)
+            cv2.drawMarker(
+                out,
+                (x, y),
+                c,
+                markerType=cv2.MARKER_CROSS,
+                markerSize=14,
+                thickness=2,
+                line_type=cv2.LINE_AA,
+            )
+    return out
+
+
 def model_seg_panel(img_np, preds, args):
     canvas = img_np.copy()
     for pred in preds:
@@ -313,7 +354,7 @@ def model_seg_panel(img_np, preds, args):
             dtype=np.uint8,
         )
         canvas = overlay_part_mask(canvas, part_sq, alpha=args.alpha)
-    return draw_wrist_centers(canvas, preds)
+    return draw_keypoints(draw_wrist_centers(canvas, preds), preds)
 
 
 def recover_hcce_poses(preds, cad, geom, model_meta, args, image_seed):
@@ -368,10 +409,12 @@ def hcce_panels(geom, cad, poses, args):
 
 
 def make_visualization(img_np, preds, geom, cad, poses, args, hcce_enabled):
-    rgb_panel = add_title(img_np, "rgb")
+    rgb_panel = add_title(draw_keypoints(img_np, preds), "rgb")
     seg_panel = add_title(model_seg_panel(img_np, preds, args), "model-seg")
     if hcce_enabled:
         mesh_panel, proj_panel = hcce_panels(geom, cad, poses, args)
+        mesh_panel = draw_keypoints(mesh_panel, preds)
+        proj_panel = draw_keypoints(proj_panel, preds)
         mesh_panel = add_title(mesh_panel, "hcce-trimesh")
         proj_panel = add_title(proj_panel, "hcce-proj-seg")
     else:

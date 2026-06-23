@@ -41,6 +41,9 @@ from estimate_rarp_hcce_articulate_pose import decode_hcce_logits
 from multi_instrument.multi_instrument_hcce_densepart_dpt import (
     MultiInstrumentHCCEDensePartDPT,
 )
+from multi_instrument.multi_instrument_hcce_densepart_keypoint_dpt import (
+    MultiInstrumentHCCEDensePartKeypointDPT,
+)
 from multi_instrument.multi_instrument_hcce_pose_dpt import MultiInstrumentHCCEPoseDPT
 
 
@@ -98,6 +101,8 @@ def _model_args_from_ckpt(ckpt_args):
         hcce_bits=8,
         action_dim=3,
         use_pose_heads=0,
+        use_depth_head=0,
+        num_keypoints=7,
         pose_head_iter=4,
         pose_head_dropout=0.3,
     )
@@ -121,14 +126,28 @@ def load_model_unified(checkpoint_path, device):
     state = ckpt["model_state_dict"]
     model_args, coord_args, raw_args = _model_args_from_ckpt(ckpt.get("args"))
     is_densepart = any(k.startswith("dense_dpt_head.") for k in state)
-    model_cls = MultiInstrumentHCCEDensePartDPT if is_densepart else MultiInstrumentHCCEPoseDPT
+    has_keypoint = any(
+        k.startswith("keypoint_head.") or k.startswith("keypoint_heatmap_head.")
+        for k in state
+    )
+    has_depth = any(k.startswith("depth_dpt_head.") for k in state)
+    if has_keypoint:
+        model_args["use_depth_head"] = int(has_depth)
+        model_cls = MultiInstrumentHCCEDensePartKeypointDPT
+        variant = "densepart_keypoint_depth_h2" if has_depth else "densepart_keypoint_h2"
+    elif is_densepart:
+        model_cls = MultiInstrumentHCCEDensePartDPT
+        variant = "densepart_h2"
+    else:
+        model_cls = MultiInstrumentHCCEPoseDPT
+        variant = "pose_dpt_h4"
     model = model_cls(**model_args).to(device)
     model.load_state_dict(state, strict=True)
     model.eval()
     return model, {
         **model_args,
         **coord_args,
-        "variant": "densepart_h2" if is_densepart else "pose_dpt_h4",
+        "variant": variant,
         "checkpoint_iter": int(ckpt.get("iter", -1)),
         "checkpoint_epoch": int(ckpt.get("epoch", -1)),
         "raw_args": raw_args,
@@ -470,6 +489,12 @@ def build_correspondences_unified(pred, cad, geom, model_meta, args, rng):
         ("gripper", PART_LABELS["gripper"]),
     ):
         mask = (inst_prob >= args.inst_thresh) & (part_label == label)
+        if part_name == "shaft" and args.shaft_raw_x_min is not None:
+            mask = (
+                mask
+                & np.isfinite(xyz[:, :, 0])
+                & (xyz[:, :, 0] > float(args.shaft_raw_x_min))
+            )
         xs, ys = select_mask_pixels(
             mask,
             int(args.max_points_per_part),
@@ -499,9 +524,6 @@ def build_correspondences_unified(pred, cad, geom, model_meta, args, rng):
         xyz_norm = xyz[ys, xs].astype(np.float64)
         finite = np.isfinite(xyz_norm).all(axis=1)
         xs, ys, uv, xyz_norm = xs[finite], ys[finite], uv[finite], xyz_norm[finite]
-        if part_name == "shaft" and args.shaft_raw_x_min is not None:
-            keep = xyz_norm[:, 0] > float(args.shaft_raw_x_min)
-            xs, ys, uv, xyz_norm = xs[keep], ys[keep], uv[keep], xyz_norm[keep]
         if len(xyz_norm) == 0:
             debug[f"{part_name}_raw_points"] = 0
             continue
@@ -789,7 +811,49 @@ def upsample_part_mask(mask, img_size):
     )
 
 
-def save_visualization(path, geom, cad, hcce_pose, posehead_pose, pred_part, args):
+KEYPOINT_COLORS = (
+    (255, 0, 255),
+    (0, 255, 255),
+    (255, 128, 0),
+    (0, 255, 0),
+    (255, 0, 0),
+    (0, 128, 255),
+    (180, 80, 255),
+)
+
+
+def draw_keypoint_marker(panel, pred, color=None):
+    out = panel.copy()
+    if pred is None:
+        return out
+    keypoint = pred.get("keypoint_xy")
+    if keypoint is None:
+        return out
+    if torch.is_tensor(keypoint):
+        keypoint = keypoint.detach().cpu().numpy()
+    h, w = out.shape[:2]
+    keypoint = np.asarray(keypoint, dtype=np.float64).reshape(-1, 2)
+    for j, xy in enumerate(keypoint):
+        if not np.isfinite(xy).all():
+            continue
+        x, y = int(round(float(xy[0]))), int(round(float(xy[1])))
+        if not (0 <= x < w and 0 <= y < h):
+            continue
+        c = KEYPOINT_COLORS[j % len(KEYPOINT_COLORS)] if color is None else color
+        cv2.circle(out, (x, y), 5, c, 2, cv2.LINE_AA)
+        cv2.drawMarker(
+            out,
+            (x, y),
+            c,
+            markerType=cv2.MARKER_CROSS,
+            markerSize=14,
+            thickness=2,
+            line_type=cv2.LINE_AA,
+        )
+    return out
+
+
+def save_visualization(path, geom, cad, hcce_pose, posehead_pose, pred_part, args, pred=None):
     rgb, K, scale, pad_x, pad_y = geom
     rgb_sq = pad_rgb_to_square(rgb, args.img_size, scale, pad_x, pad_y)
     pred_part_sq = np.asarray(
@@ -816,13 +880,19 @@ def save_visualization(path, geom, cad, hcce_pose, posehead_pose, pred_part, arg
     posehead_render_mask = upsample_part_mask(
         render_pose_quarter_mask(cad, posehead_pose, geom, args), args.img_size
     )
+    rgb_sq = draw_keypoint_marker(rgb_sq, pred)
+    hcce_mesh_sq = draw_keypoint_marker(hcce_mesh_sq, pred)
+    posehead_mesh_sq = draw_keypoint_marker(posehead_mesh_sq, pred)
+    model_seg_sq = draw_keypoint_marker(overlay_part_mask(rgb_sq, pred_part_sq), pred)
+    hcce_proj_sq = draw_keypoint_marker(overlay_part_mask(rgb_sq, hcce_render_mask), pred)
+    posehead_proj_sq = draw_keypoint_marker(overlay_part_mask(rgb_sq, posehead_render_mask), pred)
     panels = [
         add_title(rgb_sq, "rgb"),
         add_title(hcce_mesh_sq, "hcce-trimesh"),
         add_title(posehead_mesh_sq, "posehead-trimesh"),
-        add_title(overlay_part_mask(rgb_sq, pred_part_sq), "model-seg"),
-        add_title(overlay_part_mask(rgb_sq, hcce_render_mask), "hcce-proj-seg"),
-        add_title(overlay_part_mask(rgb_sq, posehead_render_mask), "posehead-proj-seg"),
+        add_title(model_seg_sq, "model-seg"),
+        add_title(hcce_proj_sq, "hcce-proj-seg"),
+        add_title(posehead_proj_sq, "posehead-proj-seg"),
     ]
     sep = np.full((args.img_size, 6, 3), 255, dtype=np.uint8)
     canvas = panels[0]
@@ -945,6 +1015,12 @@ def part_candidates(pred, geom, model_meta, args, part_name):
         part_conf = resize_float_mask(part_conf, xyz.shape[:2])
     label = PART_LABELS["gripper"] if part_name == "gripper" else PART_LABELS[part_name]
     mask = (inst_prob >= args.inst_thresh) & (part_label == label)
+    if part_name == "shaft" and args.shaft_raw_x_min is not None:
+        mask = (
+            mask
+            & np.isfinite(xyz[:, :, 0])
+            & (xyz[:, :, 0] > float(args.shaft_raw_x_min))
+        )
     ys, xs = np.where(mask)
     if len(xs) > int(args.debug_max_points):
         if getattr(args, "point_select", "random") == "top":
@@ -975,7 +1051,9 @@ def part_candidates(pred, geom, model_meta, args, part_name):
     xyz_norm = xyz[ys[valid], xs[valid]].astype(np.float64)
     uv = uv[valid]
     finite = np.isfinite(xyz_norm).all(axis=1)
-    return uv[finite], xyz_norm[finite]
+    uv = uv[finite]
+    xyz_norm = xyz_norm[finite]
+    return uv, xyz_norm
 
 
 def reproj_rmse(points, uv, rvec, trans, K):
@@ -1312,7 +1390,16 @@ def process_checkpoint(args, exp_name, checkpoint, dataset, videos):
                         / "suturePulling"
                         / f"{video}_{frame_id}_inst{instance_id}.jpg"
                     )
-                    save_visualization(vis_path, geom, cad, pose, posehead_pose, pred_part, args)
+                    save_visualization(
+                        vis_path,
+                        geom,
+                        cad,
+                        pose,
+                        posehead_pose,
+                        pred_part,
+                        args,
+                        pred=pred,
+                    )
                     row = {
                         "experiment": exp_name,
                         "checkpoint": str(checkpoint),
@@ -1398,6 +1485,22 @@ def parse_exp(value):
         return path.parent.parent.name, path
     name, path = value.split("=", 1)
     return name, Path(path)
+
+
+def json_safe(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, set):
+        return sorted(json_safe(v) for v in value)
+    if isinstance(value, dict):
+        return {str(k): json_safe(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_safe(v) for v in value]
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
 
 
 def parse_args():
@@ -1517,7 +1620,7 @@ def main():
                 "num_failures": len(all_failures),
                 "failures": all_failures,
                 "args": {
-                    k: str(v) if isinstance(v, Path) else v
+                    k: json_safe(v)
                     for k, v in vars(args).items()
                     if k != "exp"
                 },

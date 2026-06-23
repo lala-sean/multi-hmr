@@ -1,2 +1,3 @@
 from multi_instrument.multi_instrument import Multi_Instrument
 from multi_instrument.multi_instrument_hcce_densepart_dpt import MultiInstrumentHCCEDensePartDPT
+from multi_instrument.multi_instrument_hcce_densepart_keypoint_dpt import MultiInstrumentHCCEDensePartKeypointDPT

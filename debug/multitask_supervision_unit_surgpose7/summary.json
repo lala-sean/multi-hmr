@@ -1,0 +1,34 @@
+{
+  "surgpose": {
+    "imagename": "000000/frame_000005",
+    "num_instruments": 2,
+    "keypoints_shape_per_inst": [
+      7,
+      2
+    ],
+    "keypoints_visible_per_inst": [
+      7,
+      7
+    ],
+    "depth_ranges_per_inst": [
+      [
+        0.0,
+        1.0
+      ],
+      [
+        0.0,
+        1.0
+      ]
+    ]
+  },
+  "rarp": {
+    "imagename": "needlePuncture_0_video1/00001",
+    "num_instruments": 1,
+    "coord_shape": [
+      315,
+      315,
+      4
+    ],
+    "hcce_valid_pixels": 12907
+  }
+}

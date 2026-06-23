@@ -24,7 +24,6 @@ models
 tmp_data
 
 sam3/
-submodules/
 
 *.log
 *.pth

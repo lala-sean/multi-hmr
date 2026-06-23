@@ -146,6 +146,17 @@ class TrainerHCCEDensePartPose(TrainerCSE):
                     if "loss/part_acc" in meters
                     else ""
                 )
+                keypoint_str = (
+                    f" - kpt={meters['loss/keypoint_heatmap'].avg:.4f}"
+                    f" - kpt_err={meters['loss/keypoint_err_px'].avg:.2f}"
+                    if "loss/keypoint_heatmap" in meters and "loss/keypoint_err_px" in meters
+                    else ""
+                )
+                depth_str = (
+                    f" - depth={meters['loss/depth_l1'].avg:.4f}"
+                    if "loss/depth_l1" in meters
+                    else ""
+                )
                 print(
                     f"EPOCH={self.current_epoch:03d} - i={i:05d}/{len(data):05d} - "
                     f"iter={self.current_iter} - "
@@ -153,7 +164,7 @@ class TrainerHCCEDensePartPose(TrainerCSE):
                     f"det={meters['loss/det'].avg:.4f} - "
                     f"dice={meters['loss/dice'].avg:.4f} - "
                     f"part={meters['loss/part_ce'].avg:.4f}{part_acc_str}"
-                    f"{hcce_str} - accum={grad_accum_steps}"
+                    f"{hcce_str}{keypoint_str}{depth_str} - accum={grad_accum_steps}"
                 )
 
                 if self.writer is not None:

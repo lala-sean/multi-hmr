@@ -104,6 +104,14 @@ def _transform_point(xy, affine):
     return out.astype(np.float32)
 
 
+def _transform_points(xy, affine):
+    pts = np.asarray(xy, dtype=np.float32).reshape(-1, 2)
+    if pts.shape[0] == 0:
+        return pts
+    ones = np.ones((pts.shape[0], 1), dtype=np.float32)
+    return (np.concatenate([pts, ones], axis=1) @ affine.T).astype(np.float32)
+
+
 def apply_photometric_jitter(rgb, rng=np.random):
     out = rgb.astype(np.uint8, copy=True)
 
@@ -216,6 +224,22 @@ def transform_rarp_sample(
         out["inst_mask"] = inst_target
         out["part_mask"] = part_target
         out["wrist_center"] = wrist_center
+        if "keypoints" in inst:
+            keypoints = _transform_points(inst["keypoints"], affine)
+            keypoints_valid = np.asarray(
+                inst.get("keypoints_valid", np.ones((keypoints.shape[0],), dtype=bool)),
+                dtype=bool,
+            ).reshape(-1)
+            if keypoints_valid.shape[0] != keypoints.shape[0]:
+                keypoints_valid = np.zeros((keypoints.shape[0],), dtype=bool)
+            inside = (
+                (keypoints[:, 0] >= 0.0)
+                & (keypoints[:, 0] < float(img_size))
+                & (keypoints[:, 1] >= 0.0)
+                & (keypoints[:, 1] < float(img_size))
+            )
+            out["keypoints"] = keypoints
+            out["keypoints_valid"] = keypoints_valid & inside
         if dense_output_size is not None:
             out["inst_mask_dense"] = _resize_nn(inst_full, dense_output_size).astype(np.float32)
             out["part_mask_dense"] = _resize_nn(part_full, dense_output_size).astype(np.int64)
