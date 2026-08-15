@@ -17,6 +17,7 @@ wandb/
 outputs/
 eval_outputs/
 debug_vis/
+debug_outputs/
 demo_outputs/
 demo_out
 models
