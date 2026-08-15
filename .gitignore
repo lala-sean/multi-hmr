@@ -16,3 +16,6 @@ dist/
 
 # Ignore vscode directory
 .vscode/
+
+# Locally downloaded model weights.
+ckpts/
