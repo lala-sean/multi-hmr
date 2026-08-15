@@ -273,7 +273,7 @@ class DREAM(torch.utils.data.Dataset):
             if self.occlusion_augmentation and random.random() < self.occlu_p: #0.5
                 rgb = apply_occlusion(rgb)
                     
-            if self.rgb_augmentation :
+            if self.rgb_augmentation and random.random()<0.5: # rgb augment #0.5
                 rgb = apply_rgb_aug(rgb)
             img = rgb
 
