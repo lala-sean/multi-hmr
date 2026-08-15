@@ -157,12 +157,9 @@ class PartTrimeshRenderer:
             pose=camera_pose,
         )
         if not wireframe:
-            side_light_pose = camera_pose.copy()
-            side_light_pose[0, 3] += 0.10
-            side_light_pose[2, 3] += 0.10
             scene.add(
-                pyrender.PointLight(color=np.ones(3), intensity=2.2),
-                pose=side_light_pose,
+                pyrender.DirectionalLight(color=np.ones(3), intensity=1.15),
+                pose=camera_pose,
             )
         return scene
 
