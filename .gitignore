@@ -7,3 +7,10 @@ build/*
 */__pycache__/*
 bbox_grounding_dino/Grounded-SAM-2
 *.pyc
+
+# Local training artifacts and downloaded weights.
+.deps/
+logs/
+eval_outputs/
+pretrained/
+**/*.so
