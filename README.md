@@ -1,3 +1,4 @@
+> Surgical instrument experiments: see [Experiment Memory](EXPERIMENT_MEMORY.md) for the verified environment, SurfEmb recipes, results, and known reproducibility issues. Future noisy-label work is described in [Noisy Learning](NOISY_LEARNING.md).
 
 <p align="center">
   <h1 align="center">Multi-HMR: Multi-Person Whole-Body Human Mesh Recovery in a Single Shot</h1>
@@ -274,4 +275,4 @@ python train_instrument_rarp.py --eval_only 1 --pretrained logs/rarp_combined/ch
 
 
 # tensorboard
-http://172.28.105.202:6006 
+http://172.28.105.202:6006

@@ -1,0 +1,18 @@
+[submodule "submodules/HCCEPose"]
+	path = submodules/HCCEPose
+	url = https://github.com/WangYuLin-SEU/HCCEPose.git
+[submodule "submodules/RoboPEPP"]
+	path = submodules/RoboPEPP
+	url = git@github.com:lala-sean/multi-hmr.git
+	branch = codex/workspace-snapshot-20260815-robopepp
+[submodule "submodules/dinov3"]
+	path = submodules/dinov3
+	url = git@github.com:lala-sean/multi-hmr.git
+	branch = codex/workspace-snapshot-20260815-dinov3
+[submodule "submodules/gaussian-mesh-splatting"]
+	path = submodules/gaussian-mesh-splatting
+	url = git@github.com:lala-sean/instrument-splatting.git
+	branch = codex/workspace-snapshot-20260815
+[submodule "submodules/surfemb"]
+	path = submodules/surfemb
+	url = https://github.com/rasmushaugaard/surfemb.git

@@ -1,0 +1,95 @@
+{
+  "captured_at_utc": "2026-09-28T13:17:09.515864+00:00",
+  "scope": "Current local runtime, not a clean-install lockfile or historical package proof.",
+  "python": "3.11.4",
+  "executable": "/mnt/iMVR/daiyun/anaconda3/bin/python",
+  "os_release": {
+    "NAME": "Ubuntu",
+    "ID": "ubuntu",
+    "PRETTY_NAME": "Ubuntu 20.04.6 LTS",
+    "VERSION": "20.04.6 LTS (Focal Fossa)",
+    "ID_LIKE": "debian",
+    "VERSION_ID": "20.04",
+    "HOME_URL": "https://www.ubuntu.com/",
+    "SUPPORT_URL": "https://help.ubuntu.com/",
+    "BUG_REPORT_URL": "https://bugs.launchpad.net/ubuntu/",
+    "PRIVACY_POLICY_URL": "https://www.ubuntu.com/legal/terms-and-policies/privacy-policy",
+    "VERSION_CODENAME": "focal",
+    "UBUNTU_CODENAME": "focal"
+  },
+  "torch_cuda_build": "12.4",
+  "packages": {
+    "torch": "2.5.1",
+    "torchvision": "0.20.1",
+    "numpy": "1.26.4",
+    "scipy": "1.10.1",
+    "opencv-python": "4.11.0.86",
+    "Pillow": "9.4.0",
+    "moderngl": "5.12.0",
+    "glcontext": "3.0.0",
+    "PyOpenGL": "3.1.0",
+    "trimesh": "4.12.2",
+    "pyrender": "0.1.45",
+    "timm": "1.0.27",
+    "rtree": "1.0.1",
+    "matplotlib": "3.7.1",
+    "pytest": "7.4.0",
+    "einops": "0.8.2",
+    "omegaconf": "2.3.0",
+    "PyYAML": "6.0",
+    "pytorch-lightning": null,
+    "albumentations": null,
+    "pymeshlab": null,
+    "torch-scatter": null
+  },
+  "gpus": [
+    {
+      "index": "0",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "1",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "2",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "3",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "4",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "5",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "6",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    },
+    {
+      "index": "7",
+      "name": "NVIDIA RTX A5000",
+      "driver_version": "570.153.02",
+      "memory.total [MiB]": "24564 MiB"
+    }
+  ]
+}
